@@ -3,14 +3,17 @@ use smithay::{
     delegate_compositor, delegate_data_device, delegate_output, delegate_seat, delegate_shm, delegate_xdg_shell,
     desktop::{PopupKind, Window},
     input::{pointer::CursorImageStatus, Seat, SeatHandler, SeatState},
-    reexports::wayland_server::{
-        protocol::{wl_buffer, wl_seat, wl_surface::WlSurface},
-        Client,
+    reexports::{
+        wayland_protocols::xdg::shell::server::xdg_toplevel,
+        wayland_server::{
+            protocol::{wl_buffer, wl_seat, wl_surface::WlSurface},
+            Client,
+        },
     },
-    utils::Serial,
+    utils::{Serial, SERIAL_COUNTER},
     wayland::{
         buffer::BufferHandler,
-        compositor::{get_parent, is_sync_subsurface, with_states, CompositorClientState, CompositorHandler, CompositorState},
+        compositor::{is_sync_subsurface, with_states, CompositorClientState, CompositorHandler, CompositorState},
         output::OutputHandler,
         selection::{
             data_device::{ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler},
@@ -23,7 +26,10 @@ use smithay::{
     },
 };
 
-use crate::state::{Carbs, ClientState};
+use crate::{
+    grabs,
+    state::{Carbs, ClientState},
+};
 
 // ---------------------------------------------------------------- compositor / shm
 
@@ -40,12 +46,14 @@ impl CompositorHandler for Carbs {
         on_commit_buffer_handler::<Self>(surface);
 
         if !is_sync_subsurface(surface) {
-            let mut root = surface.clone();
-            while let Some(parent) = get_parent(&root) {
-                root = parent;
-            }
-            if let Some(window) = self.space.elements().find(|w| w.toplevel().map(|t| t.wl_surface()) == Some(&root)) {
+            let root = Carbs::root_surface(surface);
+            if let Some(window) = self.window_for_surface(&root) {
                 window.on_commit();
+                // Mid-resize the client picks its own size; if we're dragging the top or
+                // left edge the window has to slide so the opposite edge stays put.
+                if let Some(location) = grabs::resize_location(&root, window.geometry().size) {
+                    self.space.map_element(window, location, false);
+                }
             }
         }
 
@@ -87,6 +95,51 @@ impl XdgShellHandler for Carbs {
 
     fn grab(&mut self, _surface: PopupSurface, _seat: wl_seat::WlSeat, _serial: Serial) {}
 
+    /// The client wants to be dragged (its own titlebar, usually).
+    fn move_request(&mut self, surface: ToplevelSurface, _seat: wl_seat::WlSeat, serial: Serial) {
+        let Some(start_data) = self.client_grab_start_data(surface.wl_surface(), serial) else {
+            return;
+        };
+        let Some(window) = self.window_for_surface(surface.wl_surface()) else {
+            return;
+        };
+        self.start_move(&window, start_data, serial);
+    }
+
+    /// The client wants to be resized (dragging its own frame edge).
+    fn resize_request(
+        &mut self,
+        surface: ToplevelSurface,
+        _seat: wl_seat::WlSeat,
+        serial: Serial,
+        edges: xdg_toplevel::ResizeEdge,
+    ) {
+        let Some(start_data) = self.client_grab_start_data(surface.wl_surface(), serial) else {
+            return;
+        };
+        let Some(window) = self.window_for_surface(surface.wl_surface()) else {
+            return;
+        };
+        self.start_resize(&window, edges.into(), start_data, serial);
+    }
+
+    /// The window is gone: take it off the space and hand focus to whatever is on top now.
+    fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        if let Some(window) = self.window_for_surface(surface.wl_surface()) {
+            self.space.unmap_elem(&window);
+        }
+
+        match self.space.elements().last().cloned() {
+            Some(next) => self.focus_window(&next),
+            None => {
+                if let Some(keyboard) = self.seat.get_keyboard() {
+                    let serial = SERIAL_COUNTER.next_serial();
+                    keyboard.set_focus(self, None, serial);
+                }
+            }
+        }
+    }
+
     fn reposition_request(&mut self, surface: PopupSurface, positioner: PositionerState, token: u32) {
         surface.with_pending_state(|state| {
             state.geometry = positioner.get_geometry();
@@ -100,7 +153,7 @@ delegate_xdg_shell!(Carbs);
 impl Carbs {
     /// Sends the first configure for new toplevels/popups (required before they can show up).
     fn handle_xdg_commit(&mut self, surface: &WlSurface) {
-        if let Some(window) = self.space.elements().find(|w| w.toplevel().map(|t| t.wl_surface()) == Some(surface)).cloned() {
+        if let Some(window) = self.window_for_surface(surface) {
             let initial_configure_sent = with_states(surface, |states| {
                 states.data_map.get::<XdgToplevelSurfaceData>().unwrap().lock().unwrap().initial_configure_sent
             });

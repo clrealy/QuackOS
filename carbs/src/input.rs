@@ -1,17 +1,27 @@
 use smithay::{
     backend::input::{
-        AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent, KeyboardKeyEvent,
-        PointerAxisEvent, PointerButtonEvent,
+        AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent, KeyState,
+        KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
     },
     desktop::Window,
     input::{
-        keyboard::FilterResult,
-        pointer::{AxisFrame, ButtonEvent, MotionEvent},
+        keyboard::{keysyms, FilterResult},
+        pointer::{AxisFrame, ButtonEvent, GrabStartData, MotionEvent},
     },
     utils::SERIAL_COUNTER,
 };
 
-use crate::state::Carbs;
+use crate::{grabs, state::Carbs};
+
+/// Linux button codes (`linux/input-event-codes.h`).
+const BTN_LEFT: u32 = 0x110;
+const BTN_RIGHT: u32 = 0x111;
+
+/// Things a key combination can ask Carbs to do.
+enum Action {
+    /// Super+Q - ask the focused window to close.
+    CloseWindow,
+}
 
 impl Carbs {
     /// Gives keyboard focus to `window`, raises it, and updates the active (activated) state of every window.
@@ -43,8 +53,25 @@ impl Carbs {
             InputEvent::Keyboard { event, .. } => {
                 let serial = SERIAL_COUNTER.next_serial();
                 let time = Event::time_msec(&event);
-                if let Some(kb) = self.seat.get_keyboard() {
-                    kb.input::<(), _>(self, event.key_code(), event.state(), serial, time, |_, _, _| FilterResult::Forward);
+                let pressed = event.state() == KeyState::Pressed;
+                let Some(keyboard) = self.seat.get_keyboard() else { return };
+
+                // Compositor shortcuts are intercepted here, so the focused client
+                // never sees them.
+                let action = keyboard.input(self, event.key_code(), event.state(), serial, time, |_, mods, handle| {
+                    if pressed && mods.logo {
+                        match handle.modified_sym().raw() {
+                            keysyms::KEY_q | keysyms::KEY_Q => {
+                                return FilterResult::Intercept(Action::CloseWindow)
+                            }
+                            _ => {}
+                        }
+                    }
+                    FilterResult::Forward
+                });
+
+                if let Some(Action::CloseWindow) = action {
+                    self.close_focused_window();
                 }
             }
 
@@ -69,6 +96,25 @@ impl Carbs {
                     let hit = self.space.element_under(pointer.current_location()).map(|(w, _)| w.clone());
                     if let Some(window) = hit {
                         self.focus_window(&window);
+
+                        // Carbs draws no decorations yet, so Super+drag is how you move
+                        // and resize windows that don't draw their own frame.
+                        // Super+left  = move, Super+right = resize from the nearest corner.
+                        let logo = self.seat.get_keyboard().is_some_and(|k| k.modifier_state().logo);
+                        if logo && (button == BTN_LEFT || button == BTN_RIGHT) {
+                            let location = pointer.current_location();
+                            // focus: None - the client is not part of this drag, so it
+                            // gets no press and no release for it.
+                            let start_data = GrabStartData { focus: None, button, location };
+
+                            if button == BTN_LEFT {
+                                self.start_move(&window, start_data, serial);
+                            } else if let Some(rect) = self.space.element_geometry(&window) {
+                                let edges = grabs::edges_under_pointer(rect, location);
+                                self.start_resize(&window, edges, start_data, serial);
+                            }
+                            return;
+                        }
                     } else if let Some(kb) = self.seat.get_keyboard() {
                         kb.set_focus(self, None, serial);
                     }

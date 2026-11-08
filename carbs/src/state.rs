@@ -2,18 +2,22 @@ use std::{ffi::OsString, sync::Arc, time::Instant};
 
 use smithay::{
     desktop::{PopupManager, Space, Window, WindowSurfaceType},
-    input::{Seat, SeatState},
+    input::{
+        pointer::{Focus, GrabStartData},
+        Seat, SeatState,
+    },
     reexports::{
         calloop::{generic::Generic, EventLoop, Interest, LoopSignal, Mode, PostAction},
+        wayland_protocols::xdg::shell::server::xdg_toplevel,
         wayland_server::{
             backend::{ClientData, ClientId, DisconnectReason},
             protocol::wl_surface::WlSurface,
-            Display, DisplayHandle,
+            Display, DisplayHandle, Resource,
         },
     },
-    utils::{Logical, Point},
+    utils::{Logical, Point, Rectangle, Serial},
     wayland::{
-        compositor::{CompositorClientState, CompositorState},
+        compositor::{get_parent, CompositorClientState, CompositorState},
         output::OutputManagerState,
         selection::data_device::DataDeviceState,
         shell::xdg::XdgShellState,
@@ -21,6 +25,8 @@ use smithay::{
         socket::ListeningSocketSource,
     },
 };
+
+use crate::grabs::{self, MoveGrab, ResizeEdge, ResizeGrab};
 
 /// All of Carbs' state lives here.
 pub struct Carbs {
@@ -108,6 +114,104 @@ impl Carbs {
                 .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
                 .map(|(s, p)| (s, (p + location).to_f64()))
         })
+    }
+
+    /// Walks up from a subsurface/popup to the surface its toplevel owns.
+    pub fn root_surface(surface: &WlSurface) -> WlSurface {
+        let mut root = surface.clone();
+        while let Some(parent) = get_parent(&root) {
+            root = parent;
+        }
+        root
+    }
+
+    /// The mapped window whose toplevel owns `surface` (exactly, not via a child).
+    pub fn window_for_surface(&self, surface: &WlSurface) -> Option<Window> {
+        self.space
+            .elements()
+            .find(|w| w.toplevel().map(|t| t.wl_surface()) == Some(surface))
+            .cloned()
+    }
+
+    /// The window that currently holds keyboard focus.
+    pub fn focused_window(&self) -> Option<Window> {
+        let focus = self.seat.get_keyboard()?.current_focus()?;
+        self.window_for_surface(&Self::root_surface(&focus))
+    }
+
+    /// Asks the focused window to close. It's a request: the client may put up a
+    /// "really quit?" dialog, or ignore us. Carbs does not kill clients.
+    pub fn close_focused_window(&mut self) {
+        if let Some(toplevel) = self.focused_window().and_then(|w| w.toplevel().cloned()) {
+            toplevel.send_close();
+        }
+    }
+
+    /// Validates a client's move/resize request: the pointer must really be grabbed
+    /// with that serial, by a surface belonging to the same client. Without this check
+    /// any client could start dragging a window whenever it felt like it.
+    pub fn client_grab_start_data(
+        &self,
+        surface: &WlSurface,
+        serial: Serial,
+    ) -> Option<GrabStartData<Self>> {
+        let pointer = self.seat.get_pointer()?;
+        if !pointer.has_grab(serial) {
+            return None;
+        }
+        let start_data = pointer.grab_start_data()?;
+        let (focus, _) = start_data.focus.as_ref()?;
+        if !focus.id().same_client_as(&surface.id()) {
+            return None;
+        }
+        Some(start_data)
+    }
+
+    /// Starts dragging `window` around.
+    pub fn start_move(&mut self, window: &Window, start_data: GrabStartData<Self>, serial: Serial) {
+        let Some(initial_location) = self.space.element_location(window) else {
+            return;
+        };
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        self.focus_window(window);
+        let grab = MoveGrab::new(start_data, window.clone(), initial_location);
+        pointer.set_grab(self, grab, serial, Focus::Clear);
+    }
+
+    /// Starts resizing `window` from `edges`.
+    pub fn start_resize(
+        &mut self,
+        window: &Window,
+        edges: ResizeEdge,
+        start_data: GrabStartData<Self>,
+        serial: Serial,
+    ) {
+        if edges == ResizeEdge::NONE {
+            return;
+        }
+        let Some(toplevel) = window.toplevel().cloned() else {
+            return;
+        };
+        let Some(location) = self.space.element_location(window) else {
+            return;
+        };
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+
+        let initial_rect = Rectangle::new(location, window.geometry().size);
+        grabs::resize_started(toplevel.wl_surface(), edges, initial_rect);
+
+        toplevel.with_pending_state(|state| {
+            state.states.set(xdg_toplevel::State::Resizing);
+        });
+        toplevel.send_pending_configure();
+
+        self.focus_window(window);
+        let grab = ResizeGrab::new(start_data, window.clone(), edges, initial_rect);
+        pointer.set_grab(self, grab, serial, Focus::Clear);
     }
 }
 

@@ -28,7 +28,8 @@ Owner: clrealy. They like a casual tone; keep messages short and friendly.
 | main.sh config logic | `./tools/test-main-fakeroot.sh` (sets `ROOT=` so apt/network steps are skipped) |
 | peck | `bash -n peck/peck`, and run with a fake `gurt` on PATH (see below) |
 | DuckFS | `cd duckfs && cargo test` ; FUSE smoke test: `duckfs mkfs a.img 32 && duckfs mount a.img /tmp/m &` then cp/mkdir/rm/mv, then `fusermount -u /tmp/m` |
-| Carbs | headless: `Xvfb :77 -screen 0 1024x640x24 +extension GLX &` then `DISPLAY=:77 LIBGL_ALWAYS_SOFTWARE=1 XDG_RUNTIME_DIR=/tmp/xdg cargo run -- -c weston-simple-shm`, screenshot with `import -window root shot.png` |
+| Carbs | `cd carbs && cargo test` (grab/edge maths); headless: `Xvfb :77 -screen 0 1024x640x24 +extension GLX &` then `DISPLAY=:77 LIBGL_ALWAYS_SOFTWARE=1 XDG_RUNTIME_DIR=/tmp/xdg cargo run -- -c weston-simple-shm`, screenshot with `import -window root shot.png` |
+| Carbs move/resize | drive it with `xdotool` on the same `DISPLAY`. Xvfb has no WM, so `xdotool windowfocus $(xdotool search --name Smithay)` **first** or no key reaches Carbs. Measure a window with `convert shot.png -fuzz 12% -transparent '#F5C740' -trim info:` (that colour is the duck-yellow background). Careful with `pkill -f weston-...`: it matches `carbs -c weston-...` too. |
 
 Fake gurt for peck tests: a script on PATH named `gurt` that does `echo "GURT GOT: $*"`.
 
@@ -40,7 +41,9 @@ Real-hardware backend will later need: `libudev-dev libgbm-dev libinput-dev libs
 - The GURT step clones GURT's `main` at build time (not pinned).
 - No recovery *environment* exists yet; only the protection (udev read-only + hidden + not in fstab). It needs a partition labeled `RECOVERY` (fs label or GPT partition name). True hardware-level protection would need firmware support; root can `blockdev --setrw`.
 - DuckFS has no journal: a crash mid-write can corrupt an image. No symlinks/hard links/xattrs yet.
-- Carbs only runs nested (winit). Keyboard input reaching clients was never verified, only that input doesn't crash it. No move/resize/close yet, no layer-shell, no XWayland.
+- Carbs only runs nested (winit). No layer-shell, no XWayland, no server-side decorations, no minimize.
+  Move/resize/close work and were checked end-to-end under Xvfb (see below), but only there - never on real hardware.
+  Nothing stops a window being dragged fully off-screen, and with no dock or alt-tab yet that loses it.
 - Bread does not exist yet.
 
 ## Conventions
@@ -51,7 +54,7 @@ Real-hardware backend will later need: `libudev-dev libgbm-dev libinput-dev libs
 - Commit messages: short imperative subject. Keep `docs/ROADMAP.md` checkboxes honest.
 
 ## Good next tasks (in order)
-1. Carbs: move/resize/close with pointer grabs (Smithay `PointerGrab`), floating windows, focus rules.
+1. Carbs: clamp moves so a window can't be dragged off-screen and lost; then window decorations or alt-tab.
 2. Carbs: `wlr-layer-shell` so Bread's dock/top bar can attach.
 3. Bread: a first panel (top bar) as a separate Rust client using layer-shell.
 4. Recovery environment ("The Pond"): minimal initramfs/squashfs on the RECOVERY partition + reinstall-from-manifest.

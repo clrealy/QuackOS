@@ -8,9 +8,11 @@
 - [x] GURT preinstalled by `main.sh`
 - [x] DuckFS core + FUSE mount + 12 unit tests
 - [x] Carbs: nested compositor, xdg-shell windows, pointer/keyboard/scroll, click-to-focus
+- [x] Carbs: interactive move/resize (pointer grabs) + close, client- and Super-driven
 
 ## Next
-- [ ] Carbs: move/resize (pointer grabs), close/minimize, macOS-style floating feel
+- [ ] Carbs: keep windows reachable - clamp a drag so a window can't be lost off-screen
+- [ ] Carbs: minimize (needs Bread's dock first, otherwise there's nowhere to go)
 - [ ] Carbs: layer-shell (so Bread's dock/top bar can exist)
 - [ ] Bread: dock, top bar, launcher, settings
 - [ ] Recovery environment itself ("The Pond"): small image on the RECOVERY partition that can reinstall from a manifest

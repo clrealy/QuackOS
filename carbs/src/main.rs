@@ -2,7 +2,14 @@
 //!
 //!   carbs                 start a nested Carbs window
 //!   carbs -c <command>    ...and launch a client inside it (e.g. carbs -c weston-terminal)
+//!
+//! Window handling:
+//!   click                 focus and raise
+//!   Super + left drag     move a window
+//!   Super + right drag    resize from the nearest corner
+//!   Super + Q             ask the focused window to close
 
+mod grabs;
 mod handlers;
 mod input;
 mod state;
