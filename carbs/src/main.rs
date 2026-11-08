@@ -9,10 +9,12 @@
 //!   Super + right drag    resize from the nearest corner
 //!   Super + Q             ask the focused window to close
 
+mod config;
 mod cursor;
 mod grabs;
 mod handlers;
 mod input;
+mod shell;
 mod state;
 mod winit;
 

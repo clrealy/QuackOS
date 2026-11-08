@@ -38,9 +38,6 @@ render_elements! {
     Memory=MemoryRenderBufferRenderElement<R>,
 }
 
-/// Cursor height in pixels at scale 1. 24 is the usual default on Linux desktops.
-pub const CURSOR_SIZE: u32 = 24;
-
 impl Carbs {
     /// The cursor, as render elements to draw over everything else.
     pub fn cursor_elements<R>(&self, renderer: &mut R, scale: Scale<f64>) -> Vec<CarbsRenderElement<R>>

@@ -3,9 +3,11 @@ use std::{ffi::OsString, sync::Arc, time::Instant};
 use smithay::{
     desktop::{PopupManager, Space, Window, WindowSurfaceType},
     input::{
+        keyboard::XkbConfig,
         pointer::{CursorImageStatus, Focus, GrabStartData},
         Seat, SeatState,
     },
+    output::Output,
     reexports::{
         calloop::{generic::Generic, EventLoop, Interest, LoopSignal, Mode, PostAction},
         wayland_protocols::xdg::shell::server::xdg_toplevel,
@@ -19,17 +21,22 @@ use smithay::{
     wayland::{
         compositor::{get_parent, CompositorClientState, CompositorState},
         output::OutputManagerState,
-        selection::data_device::DataDeviceState,
-        shell::xdg::XdgShellState,
+        selection::{data_device::DataDeviceState, primary_selection::PrimarySelectionState},
+        shell::xdg::{decoration::XdgDecorationState, XdgShellState},
         shm::ShmState,
         socket::ListeningSocketSource,
     },
 };
 
 use crate::{
-    cursor::{self, Arrow},
+    config::Config,
+    cursor::Arrow,
     grabs::{self, MoveGrab, ResizeEdge, ResizeGrab},
 };
+
+/// Where the pointer sits inside a window that was just un-maximised by dragging:
+/// near the top, where a titlebar would be.
+const TITLE_GRAB_STRIP: i32 = 16;
 
 /// All of Carbs' state lives here.
 pub struct Carbs {
@@ -43,12 +50,20 @@ pub struct Carbs {
 
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
+    /// Kept alive so the decoration global stays registered; never read directly.
+    #[allow(dead_code)]
+    pub xdg_decoration_state: XdgDecorationState,
     pub shm_state: ShmState,
+    /// Kept alive so the xdg-output global stays registered; never read directly.
+    #[allow(dead_code)]
     pub output_manager_state: OutputManagerState,
     pub seat_state: SeatState<Carbs>,
     pub data_device_state: DataDeviceState,
+    pub primary_selection_state: PrimarySelectionState,
     pub seat: Seat<Carbs>,
 
+    /// Settings read from carbs.conf at startup.
+    pub config: Config,
     /// What the cursor should look like right now.
     pub cursor_status: CursorImageStatus,
     /// Carbs' own arrow, for the background and for clients that set no cursor.
@@ -62,16 +77,35 @@ pub struct Carbs {
 impl Carbs {
     pub fn new(event_loop: &mut EventLoop<'static, Carbs>, display: Display<Carbs>) -> Self {
         let dh = display.handle();
+        let config = Self::resolve_config(Config::load());
 
         let compositor_state = CompositorState::new::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
+        let xdg_decoration_state = XdgDecorationState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
         let data_device_state = DataDeviceState::new::<Self>(&dh);
+        let primary_selection_state = PrimarySelectionState::new::<Self>(&dh);
 
         let mut seat_state = SeatState::new();
         let mut seat: Seat<Self> = seat_state.new_wl_seat(&dh, "carbs");
-        seat.add_keyboard(Default::default(), 200, 25).expect("keyboard (is xkbcommon working?)");
+
+        let xkb = XkbConfig {
+            layout: &config.keyboard_layout,
+            variant: &config.keyboard_variant,
+            options: config.keyboard_options.clone(),
+            ..Default::default()
+        };
+        // A bad layout in the config must not stop the desktop coming up.
+        if seat.add_keyboard(xkb, config.repeat_delay, config.repeat_rate).is_err() {
+            tracing::error!(
+                "xkb rejected layout {:?} variant {:?}; falling back to us",
+                config.keyboard_layout,
+                config.keyboard_variant
+            );
+            seat.add_keyboard(Default::default(), config.repeat_delay, config.repeat_rate)
+                .expect("keyboard (is xkbcommon working?)");
+        }
         seat.add_pointer();
 
         let socket_name = Self::init_wayland_listener(display, event_loop);
@@ -85,13 +119,16 @@ impl Carbs {
             popups: PopupManager::default(),
             compositor_state,
             xdg_shell_state,
+            xdg_decoration_state,
             shm_state,
             output_manager_state,
             seat_state,
             data_device_state,
+            primary_selection_state,
             seat,
+            cursor_arrow: Arrow::new(config.cursor_size),
+            config,
             cursor_status: CursorImageStatus::default_named(),
-            cursor_arrow: Arrow::new(cursor::CURSOR_SIZE),
             pointer_focus: None,
         }
     }
@@ -120,6 +157,35 @@ impl Carbs {
             .expect("couldn't register display");
 
         socket_name
+    }
+
+    /// Fills in anything the config left for Carbs to work out, like which
+    /// terminal is actually installed.
+    fn resolve_config(mut config: Config) -> Config {
+        if config.terminal.is_empty() {
+            config.terminal = crate::config::first_on_path(crate::config::TERMINAL_CANDIDATES)
+                .unwrap_or_default();
+            if config.terminal.is_empty() {
+                tracing::warn!("no terminal found on PATH; set `terminal = ...` in carbs.conf");
+            } else {
+                tracing::info!("using {} as the terminal", config.terminal);
+            }
+        }
+        if config.launcher.is_empty() {
+            config.launcher = crate::config::first_on_path(crate::config::LAUNCHER_CANDIDATES)
+                .unwrap_or_default();
+        }
+        config
+    }
+
+    /// Area of `geometry` left over once layer-shell clients have reserved theirs.
+    /// Nothing reserves anything yet; layer-shell fills this in.
+    pub fn subtract_exclusive_zones(
+        &self,
+        _output: &Output,
+        geometry: Rectangle<i32, Logical>,
+    ) -> Rectangle<i32, Logical> {
+        geometry
     }
 
     /// Topmost surface under `pos` (compositor coordinates) and that surface's origin.
@@ -184,6 +250,23 @@ impl Carbs {
 
     /// Starts dragging `window` around.
     pub fn start_move(&mut self, window: &Window, start_data: GrabStartData<Self>, serial: Serial) {
+        // Dragging a maximised or fullscreen window restores it first, the way
+        // every other desktop does, and drops it under the pointer.
+        if self.is_tiled(window) {
+            if let Some(restored) = self.restore_floating(window) {
+                let wanted = Point::from((
+                    start_data.location.x.round() as i32 - restored.size.w / 2,
+                    start_data.location.y.round() as i32 - TITLE_GRAB_STRIP,
+                ));
+                // Clamp against the size it is becoming, not the size it still has.
+                let location = match self.work_area_for_window(window) {
+                    Some(area) => crate::shell::clamp_to_area(area, restored.size, wanted),
+                    None => wanted,
+                };
+                self.space.map_element(window.clone(), location, true);
+            }
+        }
+
         let Some(initial_location) = self.space.element_location(window) else {
             return;
         };

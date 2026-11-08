@@ -5,23 +5,17 @@ use smithay::{
     },
     desktop::Window,
     input::{
-        keyboard::{keysyms, FilterResult},
+        keyboard::FilterResult,
         pointer::{AxisFrame, ButtonEvent, CursorImageStatus, GrabStartData, MotionEvent},
     },
     utils::SERIAL_COUNTER,
 };
 
-use crate::{grabs, state::Carbs};
+use crate::{grabs, shell, state::Carbs};
 
 /// Linux button codes (`linux/input-event-codes.h`).
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
-
-/// Things a key combination can ask Carbs to do.
-enum Action {
-    /// Super+Q - ask the focused window to close.
-    CloseWindow,
-}
 
 impl Carbs {
     /// Gives keyboard focus to `window`, raises it, and updates the active (activated) state of every window.
@@ -57,21 +51,20 @@ impl Carbs {
                 let Some(keyboard) = self.seat.get_keyboard() else { return };
 
                 // Compositor shortcuts are intercepted here, so the focused client
-                // never sees them.
-                let action = keyboard.input(self, event.key_code(), event.state(), serial, time, |_, mods, handle| {
-                    if pressed && mods.logo {
-                        match handle.modified_sym().raw() {
-                            keysyms::KEY_q | keysyms::KEY_Q => {
-                                return FilterResult::Intercept(Action::CloseWindow)
-                            }
-                            _ => {}
+                // never sees them. See shell::action_for for the table.
+                let action =
+                    keyboard.input(self, event.key_code(), event.state(), serial, time, |state, mods, handle| {
+                        if !pressed {
+                            return FilterResult::Forward;
                         }
-                    }
-                    FilterResult::Forward
-                });
+                        match shell::action_for(mods, handle.modified_sym(), &state.config) {
+                            Some(action) => FilterResult::Intercept(action),
+                            None => FilterResult::Forward,
+                        }
+                    });
 
-                if let Some(Action::CloseWindow) = action {
-                    self.close_focused_window();
+                if let Some(action) = action {
+                    self.run_action(action);
                 }
             }
 

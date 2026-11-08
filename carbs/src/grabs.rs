@@ -179,7 +179,9 @@ impl PointerGrab<Carbs> for MoveGrab {
         }
 
         let delta = event.location - self.start_data.location;
-        let location = (self.initial_location.to_f64() + delta).to_i32_round();
+        let wanted = (self.initial_location.to_f64() + delta).to_i32_round();
+        // Never let a window be dragged somewhere it can't be grabbed again.
+        let location = data.clamp_location(&self.window, wanted);
         data.space.map_element(self.window.clone(), location, true);
     }
 

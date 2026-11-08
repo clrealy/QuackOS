@@ -1,12 +1,17 @@
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
-    delegate_compositor, delegate_data_device, delegate_output, delegate_seat, delegate_shm, delegate_xdg_shell,
+    delegate_compositor, delegate_data_device, delegate_output, delegate_primary_selection, delegate_seat,
+    delegate_shm, delegate_xdg_decoration, delegate_xdg_shell,
     desktop::{PopupKind, Window},
     input::{pointer::CursorImageStatus, Seat, SeatHandler, SeatState},
+    output::Output,
     reexports::{
-        wayland_protocols::xdg::shell::server::xdg_toplevel,
+        wayland_protocols::xdg::{
+            decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode,
+            shell::server::xdg_toplevel,
+        },
         wayland_server::{
-            protocol::{wl_buffer, wl_seat, wl_surface::WlSurface},
+                protocol::{wl_buffer, wl_output, wl_seat, wl_surface::WlSurface},
             Client,
         },
     },
@@ -17,9 +22,11 @@ use smithay::{
         output::OutputHandler,
         selection::{
             data_device::{ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler},
+            primary_selection::{PrimarySelectionHandler, PrimarySelectionState},
             SelectionHandler,
         },
         shell::xdg::{
+            decoration::XdgDecorationHandler,
             PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState, XdgToplevelSurfaceData,
         },
         shm::{ShmHandler, ShmState},
@@ -123,6 +130,31 @@ impl XdgShellHandler for Carbs {
         self.start_resize(&window, edges.into(), start_data, serial);
     }
 
+    fn maximize_request(&mut self, surface: ToplevelSurface) {
+        if let Some(window) = self.window_for_surface(surface.wl_surface()) {
+            self.set_maximized(&window, true);
+        }
+    }
+
+    fn unmaximize_request(&mut self, surface: ToplevelSurface) {
+        if let Some(window) = self.window_for_surface(surface.wl_surface()) {
+            self.set_maximized(&window, false);
+        }
+    }
+
+    fn fullscreen_request(&mut self, surface: ToplevelSurface, output: Option<wl_output::WlOutput>) {
+        if let Some(window) = self.window_for_surface(surface.wl_surface()) {
+            let output = output.as_ref().and_then(Output::from_resource);
+            self.set_fullscreen(&window, true, output);
+        }
+    }
+
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        if let Some(window) = self.window_for_surface(surface.wl_surface()) {
+            self.set_fullscreen(&window, false, None);
+        }
+    }
+
     /// The window is gone: take it off the space and hand focus to whatever is on top now.
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         if let Some(window) = self.window_for_surface(surface.wl_surface()) {
@@ -162,11 +194,9 @@ impl Carbs {
             }
         }
 
-        if let Some(popup) = self.popups.find_popup(surface) {
-            if let PopupKind::Xdg(ref popup) = popup {
-                if !popup.is_initial_configure_sent() {
-                    let _ = popup.send_configure();
-                }
+        if let Some(PopupKind::Xdg(ref popup)) = self.popups.find_popup(surface) {
+            if !popup.is_initial_configure_sent() {
+                let _ = popup.send_configure();
             }
         }
     }
@@ -207,3 +237,46 @@ delegate_data_device!(Carbs);
 
 impl OutputHandler for Carbs {}
 delegate_output!(Carbs);
+
+impl PrimarySelectionHandler for Carbs {
+    fn primary_selection_state(&self) -> &PrimarySelectionState {
+        &self.primary_selection_state
+    }
+}
+delegate_primary_selection!(Carbs);
+
+// ---------------------------------------------------------------- decorations
+
+/// Carbs draws no window frames, so every toplevel is told to draw its own.
+/// Without this protocol some toolkits come up with no titlebar and no way to
+/// move or close the window.
+impl XdgDecorationHandler for Carbs {
+    fn new_decoration(&mut self, toplevel: ToplevelSurface) {
+        self.set_client_side_decorations(&toplevel);
+    }
+
+    fn request_mode(&mut self, toplevel: ToplevelSurface, mode: DecorationMode) {
+        if mode == DecorationMode::ServerSide {
+            tracing::debug!("a client asked for server-side decorations; Carbs has none yet");
+        }
+        self.set_client_side_decorations(&toplevel);
+    }
+
+    fn unset_mode(&mut self, toplevel: ToplevelSurface) {
+        self.set_client_side_decorations(&toplevel);
+    }
+}
+delegate_xdg_decoration!(Carbs);
+
+impl Carbs {
+    fn set_client_side_decorations(&mut self, toplevel: &ToplevelSurface) {
+        toplevel.with_pending_state(|state| {
+            state.decoration_mode = Some(DecorationMode::ClientSide);
+        });
+        // Before the first configure the client isn't listening yet; the initial
+        // configure in handle_xdg_commit will carry this.
+        if toplevel.is_initial_configure_sent() {
+            toplevel.send_pending_configure();
+        }
+    }
+}

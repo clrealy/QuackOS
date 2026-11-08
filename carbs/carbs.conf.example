@@ -1,0 +1,31 @@
+# Carbs configuration - copy to ~/.config/carbs/carbs.conf
+#
+# key = value, one per line.
+# A line starting with '#' is a comment. A '#' anywhere else is part of the
+# value, so colours below work as written.
+# Anything you leave out keeps its default; a line Carbs can't parse is
+# reported in the log and ignored, never fatal.
+
+# What Super+Return and Super+D run. Leave unset and Carbs picks the first
+# one it finds on PATH.
+# terminal = foot
+# launcher = bread-launcher
+
+# Keyboard. Same values as setxkbmap / XKB.
+keyboard_layout = us
+# keyboard_variant = dvorak
+# keyboard_options = ctrl:nocaps
+
+# Milliseconds before a held key repeats, and repeats per second after that.
+repeat_delay = 400
+repeat_rate = 30
+
+# Pointer height in pixels (8-512).
+cursor_size = 24
+
+# Desktop background. QuackOS duck yellow.
+background = #f5c740
+
+# Run these once Carbs is up. Repeat the line for each one.
+# autostart = bread-bar
+# autostart = bread-dock
