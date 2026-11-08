@@ -9,6 +9,7 @@
 //!   Super + right drag    resize from the nearest corner
 //!   Super + Q             ask the focused window to close
 
+mod cursor;
 mod grabs;
 mod handlers;
 mod input;

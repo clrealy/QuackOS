@@ -184,7 +184,11 @@ impl SeatHandler for Carbs {
     }
 
     fn focus_changed(&mut self, _seat: &Seat<Self>, _focused: Option<&WlSurface>) {}
-    fn cursor_image(&mut self, _seat: &Seat<Self>, _image: CursorImageStatus) {}
+
+    /// A client set the pointer image (or asked for it to be hidden).
+    fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
+        self.cursor_status = image;
+    }
 }
 delegate_seat!(Carbs);
 

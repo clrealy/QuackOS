@@ -3,7 +3,7 @@ use std::{ffi::OsString, sync::Arc, time::Instant};
 use smithay::{
     desktop::{PopupManager, Space, Window, WindowSurfaceType},
     input::{
-        pointer::{Focus, GrabStartData},
+        pointer::{CursorImageStatus, Focus, GrabStartData},
         Seat, SeatState,
     },
     reexports::{
@@ -26,7 +26,10 @@ use smithay::{
     },
 };
 
-use crate::grabs::{self, MoveGrab, ResizeEdge, ResizeGrab};
+use crate::{
+    cursor::{self, Arrow},
+    grabs::{self, MoveGrab, ResizeEdge, ResizeGrab},
+};
 
 /// All of Carbs' state lives here.
 pub struct Carbs {
@@ -45,6 +48,15 @@ pub struct Carbs {
     pub seat_state: SeatState<Carbs>,
     pub data_device_state: DataDeviceState,
     pub seat: Seat<Carbs>,
+
+    /// What the cursor should look like right now.
+    pub cursor_status: CursorImageStatus,
+    /// Carbs' own arrow, for the background and for clients that set no cursor.
+    pub cursor_arrow: Arrow,
+    /// The surface the pointer was last over, so we can reset the cursor when it
+    /// crosses into a different surface (the image is undefined until that surface
+    /// sets one, so carrying the old one over would be wrong).
+    pub pointer_focus: Option<WlSurface>,
 }
 
 impl Carbs {
@@ -78,6 +90,9 @@ impl Carbs {
             seat_state,
             data_device_state,
             seat,
+            cursor_status: CursorImageStatus::default_named(),
+            cursor_arrow: Arrow::new(cursor::CURSOR_SIZE),
+            pointer_focus: None,
         }
     }
 

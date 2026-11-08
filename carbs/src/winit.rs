@@ -5,18 +5,18 @@ use std::time::Duration;
 
 use smithay::{
     backend::{
-        renderer::{
-            damage::OutputDamageTracker, element::surface::WaylandSurfaceRenderElement, gles::GlesRenderer,
-            glow::GlowRenderer,
-        },
+        renderer::{damage::OutputDamageTracker, gles::GlesRenderer, glow::GlowRenderer},
         winit::{self, WinitEvent},
     },
+    input::pointer::CursorImageStatus,
     output::{Mode, Output, PhysicalProperties, Subpixel},
     reexports::calloop::EventLoop,
-    utils::{Rectangle, Transform},
+    utils::{Rectangle, Scale, Transform},
 };
 
-use crate::state::Carbs;
+use smithay::desktop::utils::send_frames_surface_tree;
+
+use crate::{cursor::CarbsRenderElement, state::Carbs};
 
 const BACKGROUND: [f32; 4] = [0.96, 0.78, 0.25, 1.0]; // duck yellow 🦆
 
@@ -44,26 +44,35 @@ pub fn init_winit(event_loop: &mut EventLoop<'static, Carbs>, state: &mut Carbs)
         WinitEvent::Redraw => {
             let size = backend.window_size();
             let damage = Rectangle::from_size(size);
+            let scale = Scale::from(output.current_scale().fractional_scale());
             {
                 let (renderer, mut framebuffer) = backend.bind().unwrap();
-                smithay::desktop::space::render_output::<_, WaylandSurfaceRenderElement<GlowRenderer>, _, _>(
+                // The cursor is drawn over everything, so it goes in as a custom element.
+                let overlay = state.cursor_elements(renderer, scale);
+                if let Err(err) = smithay::desktop::space::render_output::<_, CarbsRenderElement<GlowRenderer>, _, _>(
                     &output,
                     renderer,
                     &mut framebuffer,
                     1.0,
                     0,
                     [&state.space],
-                    &[],
+                    &overlay,
                     &mut damage_tracker,
                     BACKGROUND,
-                )
-                .unwrap();
+                ) {
+                    // A dropped frame is not worth taking the session down for.
+                    tracing::error!("render failed: {err:?}");
+                }
             }
             backend.submit(Some(&[damage])).unwrap();
 
             let now = state.start_time.elapsed();
             for window in state.space.elements() {
                 window.send_frame(&output, now, Some(Duration::ZERO), |_, _| Some(output.clone()));
+            }
+            // Animated cursors need their frame callbacks too.
+            if let CursorImageStatus::Surface(surface) = state.cursor_status.clone() {
+                send_frames_surface_tree(&surface, &output, now, Some(Duration::ZERO), |_, _| None);
             }
             state.space.refresh();
             state.popups.cleanup();

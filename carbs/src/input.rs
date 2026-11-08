@@ -6,7 +6,7 @@ use smithay::{
     desktop::Window,
     input::{
         keyboard::{keysyms, FilterResult},
-        pointer::{AxisFrame, ButtonEvent, GrabStartData, MotionEvent},
+        pointer::{AxisFrame, ButtonEvent, CursorImageStatus, GrabStartData, MotionEvent},
     },
     utils::SERIAL_COUNTER,
 };
@@ -81,6 +81,16 @@ impl Carbs {
                 let pos = event.position_transformed(geo.size) + geo.loc.to_f64();
                 let serial = SERIAL_COUNTER.next_serial();
                 let under = self.surface_under(pos);
+
+                // A surface's cursor image is undefined until that surface sets one,
+                // so going back to the arrow on every crossing is correct - otherwise
+                // a text I-beam would follow the pointer out of the text field.
+                let focus = under.as_ref().map(|(surface, _)| surface.clone());
+                if focus != self.pointer_focus {
+                    self.pointer_focus = focus;
+                    self.cursor_status = CursorImageStatus::default_named();
+                }
+
                 let pointer = self.seat.get_pointer().unwrap();
                 pointer.motion(self, under, &MotionEvent { location: pos, serial, time: event.time_msec() });
                 pointer.frame(self);
