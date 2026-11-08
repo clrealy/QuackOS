@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# peck - the QuackOS package manager 🦆  (GURT backend)
+# Thin, friendly front-end: every peck command is handed to `gurt`.
+# Sources work like gurt's: peck install apt/htop, peck install aur/yay, --repo flatpak, etc.
+
+set -uo pipefail
+VERSION="0.2.0"
+GURT="${PECK_GURT:-gurt}"
+GURT_INSTALL="curl -fsSL https://raw.githubusercontent.com/clrealy/GURT/main/install.sh | sh"
+
+help() {
+  cat <<'TXT'
+🦆 peck - the QuackOS package manager (powered by GURT)
+
+  peck install <pkg...>    install packages        (aliases: add, get)
+  peck remove  <pkg...>    remove packages         (aliases: rm, uninstall)
+  peck update              pull the latest recipes (gurt sync)
+  peck upgrade             upgrade everything gurt installed
+  peck search  <term>      search packages         (alias: find)
+  peck info    <pkg>       show package details    (alias: show)
+  peck list                what you've installed   (alias: ls)
+  peck autoremove          yeet deps nothing needs anymore
+  peck run     <app>       start an app (offers to install it first)
+  peck de      <name>      desktop environments    (peck de kde)
+  peck history | cache | verify | profile | files | owns | why | compare | hogs | notify
+                           straight through to the gurt command of the same name
+  peck -y ...              say yes to everything
+  peck gurt    <args...>   pass anything to gurt as-is
+  peck help | version
+
+Pick a source like gurt does:  peck install apt/htop   peck install aur/yay   peck search -a fetch
+Set PECK_GURT=/path/to/gurt to use a different gurt binary.
+TXT
+}
+
+need_gurt() {
+  if ! command -v "$GURT" >/dev/null 2>&1; then
+    echo "🦆 peck can't find GURT ('$GURT'). Install it first:" >&2
+    echo "   $GURT_INSTALL" >&2
+    exit 127
+  fi
+}
+
+# leading -y / --yes goes before the gurt verb (that's where gurt wants it)
+PRE=()
+while [[ "${1:-}" == "-y" || "${1:-}" == "--yes" ]]; do PRE+=("$1"); shift; done
+
+cmd="${1:-help}"; [[ $# -gt 0 ]] && shift
+
+go() {  # go <gurt-verb> [args...]
+  need_gurt
+  echo "🦆 pecking: $*" >&2
+  exec "$GURT" ${PRE[@]+"${PRE[@]}"} "$@"
+}
+
+need_args() {  # need_args <verb> <arg-count>
+  if [[ "$2" -lt 1 ]]; then
+    echo "peck $1: what should I peck at? (try: peck $1 <name>)" >&2
+    exit 2
+  fi
+}
+
+case "$cmd" in
+  install|add|get)        need_args install $#; go install "$@" ;;
+  remove|rm|uninstall)    need_args remove $#;  go remove "$@" ;;
+  update)                 go sync "$@" ;;
+  upgrade)                go upgrade "$@" ;;
+  search|find)            need_args search $#;  go search "$@" ;;
+  info|show)              need_args info $#;    go info "$@" ;;
+  list|ls)                go list "$@" ;;
+  de)                     need_args de $#;      go de "$@" ;;
+  autoremove|run|history|cache|verify|profile|files|owns|why|compare|hogs|notify|sync|gui)
+                          go "$cmd" "$@" ;;
+  gurt)                   go "$@" ;;
+  version|-v|--version)   echo "peck $VERSION (backend: $GURT)" ;;
+  help|-h|--help)         help ;;
+  *) echo "peck: unknown command '$cmd' (try: peck help)" >&2; exit 2 ;;
+esac

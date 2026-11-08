@@ -1,0 +1,13 @@
+[package]
+name = "duckfs"
+version = "0.1.0"
+edition = "2021"
+description = "DuckFS - the filesystem for QuackOS"
+
+[dependencies]
+libc = "0.2"
+fuser = { version = "0.14", default-features = false }
+
+[[bin]]
+name = "duckfs"
+path = "src/main.rs"

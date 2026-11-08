@@ -1,0 +1,12 @@
+[package]
+name = "carbs"
+version = "0.1.0"
+edition = "2021"
+description = "Carbs - the Wayland compositor for QuackOS (Bread desktop)"
+
+[dependencies]
+smithay = { version = "0.7", default-features = false, features = [
+  "backend_winit", "backend_egl", "renderer_glow", "wayland_frontend", "desktop",
+] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
